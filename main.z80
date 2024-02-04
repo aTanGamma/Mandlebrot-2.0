@@ -1,0 +1,268 @@
+;   A 'simple' mandlebrot generator at full resolution bitmap
+
+;Documentation in the Readme
+
+    DEVICE ZXSPECTRUM48
+
+
+/*----= Global Variables =----*/
+
+Current_X = $8000   ;Location of current X coord (16-bit, fixed point)
+Current_Y = $8002   ;Location of current Y coord (16-bit, fixed point)
+
+X_Byte = $8006  ;Screen byte number (0 - 31) ──┐
+X_Pixel = $8004 ;The X-pos in px on the screen ├───> For working out Screen Address
+Line_No = $8005 ;Scanline number ──────────────┘
+;^ In reverse order for loading into bc
+
+Byte_To_Fill = $8007
+
+Timer = $8008
+
+/*----= Definitions =----*/
+
+_INITIAL_X = $E000  ;-2
+_INITIAL_Y = $1000  ;+1
+
+_X_STEP_SIZE = $0028    ;+ 2.5/256 = 0000.0000 0011 0000 
+_Y_STEP_SIZE = $FFD5    ;- 2.25/192 = 1111.1111 1101 0101
+
+_BORDER_COLOUR = 0 ;Black border
+
+_MAX_ITERATIONS = 128
+
+_SCREEN_BITMAP_START = $4000
+_BITMAP_LENGTH = $1800
+
+_COLOUR_ATTRIBUTES_START = $5800
+_COL_ATR_LENGTH = $0300
+
+_WHITE_BLACK = %01111000    ;no flash, bright, black paper, white ink
+
+_SCALE_IMAGE_LOCATION = $6000
+_SCALE_IMAGE_SIZE = 6144
+
+_FONT_LOCATION = $7800  ;Also the first Character
+
+/*----= Main Code =----*/
+
+    org $4000
+
+    INCBIN "Title_Binary.bin"
+
+    org $8100
+
+    MODULE Main_Loop
+
+
+Start
+
+;   Rough layout:
+
+;   Clear screen & Attributes
+;   setup loop for line:
+;     > Set up loop for byte
+;     > Iterate each pixel and plot result in byte
+;     > After 8 pixels, increment hl for next byte & plot byte
+;     > After 32, move to next line
+
+
+    di
+
+    im 2
+    ld a, $39   ;Makes interrupt jump to somewhere in page $39xx - All bytes are $FF
+    ld i, a     ;CPU then goes to location $FFFF to execute a relative jump, which happens to make jr $F3, so a jp can be put 13 bytes behind $FFFF
+
+    ei
+
+Main
+
+    call Setup.Load_Scale
+
+Iterator
+
+    call Iterator.Init  ;Returns #iterations in a
+
+Determine_Pixel_State
+
+    or a
+    cp _MAX_ITERATIONS
+
+    ccf
+    
+    jr nz, Rotate_In_Pixel   ;Skip if iterations < MAX
+
+    scf     ;If max. iterations reached, set C
+Rotate_In_Pixel
+    
+    ld a, (Byte_To_Fill)
+    rla
+    ld (Byte_To_Fill), a    ;Put 1 pixel in a holding byte (will be plotted every 8 px)
+
+Inc_X_Px
+
+    ld a, (X_Pixel)
+    inc a
+    ld (X_Pixel), a ;Increment Pixel position
+
+    and %00000111   ;Xpx % 8
+
+    jr z, Inc_X_Byte
+
+Step_X_Coord
+
+    ld bc, (Current_X)
+    ld hl, _X_STEP_SIZE
+
+    add hl, bc  ;Step X coord to next pixel
+
+    ld (Current_X), hl  ;Return to memory
+
+    jr Iterator ;Now calculate the next pixel
+
+Inc_X_Byte
+
+    ld a, (Byte_To_Fill)
+    ld bc, (Line_No)
+    call Xor_Byte_Plotter.Start ;Plot finished byte
+
+    ld bc, (Line_No)
+    ld a, 191
+    sub c
+    ld c, a
+    ld a, (Byte_To_Fill)
+    call Xor_Byte_Plotter.Start ;Mirror byte to lower half of screen
+
+    xor a
+    ld (Byte_To_Fill), a
+
+    ld a, (X_Byte)
+    inc a
+    ld (X_Byte), a  ;Step to next byte
+
+    and %00011111   ;Byte# % 32
+
+    jr nz, Step_X_Coord ;If next byte != 32 (or 0), step X as usual
+
+    xor a
+    ld (X_Byte), a  ;Reset to 0
+
+Inc_Line_No
+
+    ld a, (Line_No)
+    inc a
+    ld (Line_No), a
+
+    cp 96
+
+    jr z, Done
+
+Reset_X_Pos
+
+    ld bc, _INITIAL_X
+    ld (Current_X), bc  ;Reset X_Pos to -2
+
+Step_Y_Coord
+
+    ld bc, (Current_Y)
+    ld hl, _Y_STEP_SIZE
+
+    add hl, bc
+
+    ld (Current_Y), hl
+
+    jr Iterator
+
+Done
+
+    di
+
+    INCLUDE "Timer_Msg.z80"
+
+
+End
+
+    im 1
+    ei
+
+    halt
+
+    ret
+
+    ENDMODULE
+
+    MODULE Setup
+
+Load_Scale
+
+    ld de, _SCREEN_BITMAP_START
+    ld hl, _SCALE_IMAGE_LOCATION
+    ld bc, _SCALE_IMAGE_SIZE
+
+    ldir
+
+
+Set_Attributes
+
+    ld a, _WHITE_BLACK
+    ld hl, _COLOUR_ATTRIBUTES_START
+    ld (hl), a
+    ld de, _COLOUR_ATTRIBUTES_START+1
+    ld bc, _COL_ATR_LENGTH
+
+    ldir
+
+Set_Border
+
+    ld a, _BORDER_COLOUR
+    out (254), a  ;Set border colour Black
+
+
+Print_Working_Msg
+
+    INCLUDE "Working_Msg.z80"
+
+Preset_Variables
+
+    ld a, 0
+    ld (X_Byte), a
+    ld (X_Pixel), a
+    ld (Line_No), a
+    ld (Byte_To_Fill), a    ;Reset screen stuff
+
+    ld (Timer), a
+    ld (Timer+1), a
+    ld (Timer+2), a     ;Reset Timer
+
+    ld bc, _INITIAL_X
+    ld (Current_X),bc
+    ld (Iterator.Working_X),bc
+
+    ld bc, _INITIAL_Y
+    ld (Current_Y),bc
+    ld (Iterator.Working_Y),bc
+
+    ret
+
+    ENDMODULE
+
+
+
+
+
+    INCLUDE "Iterator.z80"
+
+    INCLUDE "Maths.z80"
+
+    INCLUDE "Interrupt_Stuff.z80"
+
+    org _SCALE_IMAGE_LOCATION
+    INCBIN "Scale_Packed.bin"
+
+    org _FONT_LOCATION
+    INCLUDE "Font.z80"
+
+
+    SAVESNA "mandle.sna", Main_Loop.Start
+
+    SAVETAP "Tape.tap", Main_Loop.Start

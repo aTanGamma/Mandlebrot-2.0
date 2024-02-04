@@ -1,0 +1,233 @@
+;This file contains the code which iterates for every pixel in the bitmap
+
+
+    MODULE Iterator
+
+Working_X = $80D0   ;Initially copies of Current_X / Current_Y
+Working_Y = $80D2   ; Are used each iteration as Z_(-1)
+
+Next_X = $80D4  ;These are used to work out the new x/y positions
+Next_Y = $80D6  ;Once calculated, these are moved into copy places for next iteration
+
+X2 = $80D8  ;X^2
+Y2 = $80DB  ;Y^2    2 bytes as upper nybble can be ignored here - result <= $6400 from X^2
+
+Iteration = $80DE   ;Iteration counter
+
+Temp_Space = $80F0  ;16 bytes free for general purpose
+
+
+/*
+    General Proc:
+
+    Z1 = Z0^2 + XY
+
+    X' = X^2 - Y^2 + X0
+
+    Y' = 2*X*Y + Y0
+
+    Start calculations 'after' first iteration - Z1 = 0+0j + X+Yj, so Z1 = X+Yj
+    For very large coordinates, this immediately rejects them
+
+    Method:
+
+        - Calculate X2 and Y2 from current screen coords (skips first iteration)
+
+    +---> Check if X2 + Y2 > 4
+    |     +-> If yes, exit and return iteration number (always 1+)
+    |   - Next_X = X2 - Y2 + Current_X
+    |   - Next_Y = ((X*Y) << 2) + Current_Y
+    |   - Increment iteration counter
+    |   - Check if iteration number > _MAX_ITERATIONS
+    |     +-> If yes, exit and return iteration number (_MAX_ITERATIONS)
+    |   - Calculate X2 and Y2   ; Just hear to even the look of this bit
+    +---- Loop
+
+*/
+
+Init
+
+    ld a, 2
+    out (254), a  ;Set border colour Red    (Shows program working)
+
+    ld a, 0
+    ld (Iteration), a   ;Initialise iteration counter to 0
+
+    ld bc, (Current_X)
+    ld (Working_X), bc
+
+    ld bc, (Current_Y)
+    ld (Working_Y), bc  ;Make a copy of X&Y
+
+Initial_Check_1  ;Checks if in block (-0.5, 0.5),(-0.5, -0.5) or (),()
+
+;   bc currently has Y value
+
+    ld a, b
+    sub $07
+
+    jp p, Initial_Check_2   ;If b > 0.5, skip
+
+    ld bc, (Current_X)
+    bit 7, b    ;Check if X pos > 0, if yes, skip
+
+    jp z, Initial_Check_2
+
+    ld a, b
+    cpl
+    ld b, a
+
+    ld a, c
+    cpl
+    ld c, a
+
+    inc bc  ;Make Xpos positive
+
+    ld a, $08
+    cp b    ;If X > 0.5, carry on
+
+    jp m, Initial_Check_2
+
+    ld a, _MAX_ITERATIONS
+    ret
+
+Initial_Check_2
+
+    ld bc, $0999    ;~0.6
+    ld hl, (Current_Y)
+
+    or a
+    sbc hl, bc
+
+    bit 7, h
+    jp z, Calc_X2
+
+    ld hl, (Current_X)
+    ld bc, $04CC    ;~0.3
+
+    bit 7, h
+    jp z, Calc_X2   ;If X > 0, skip
+
+    ld a, h
+    cpl
+    ld h, a
+
+    ld a, l
+    cpl
+    ld l, a
+    inc hl  ;Make X +ve
+
+    or a
+    sbc hl, bc
+
+    bit 7, h
+    jp z, Calc_X2
+
+    ld a, _MAX_ITERATIONS
+    ret
+
+Calc_X2
+
+    ld bc, (Working_X)
+    ld d, b
+    ld e, c ;Slightly quicker than loading from memory (-2 cycles)
+    call Long_Multiply.Start    ;Calculates X^2, returns result in BC (and A)
+
+    ld a, b
+    cp $40  ;Check if X2 > 4 (a - b)
+    jp p, Exit  ;If X2 > 4, ans >= 0
+
+    ld (X2), bc ;Store X^2 in X2
+
+Calc_Y2
+
+    ld bc, (Working_Y)
+    ld d,b
+    ld e,c
+    call Long_Multiply.Start    ;Calculates Y^2, returns result in BC (and A)
+
+    ld (Y2), bc ;Store Y^2 in Y2
+
+Check_Radius
+
+;   Calculate X2 + Y2
+;   Then to show if R > 4, subtract $4000, then $0001
+;   If R' >= 0, R > 4, so exit
+
+;   No 3rd byte needed as most extreme case is within range of numbers
+
+    ld hl, (X2)
+    ld bc, (Y2)
+
+    add hl, bc  ;hl = X2 + Y2
+    
+    ld a, $40
+    sub h
+
+    jp m, Exit
+
+Calc_Next_X
+
+    ld hl, (X2)
+    ld bc, (Y2)
+
+    or a
+    sbc hl, bc  ;hl = X2 - Y2
+
+    ld bc, (Current_X)
+    add hl, bc  ;hl = Next_X
+
+    ld (Next_X), hl
+
+    ld a, h
+    cp $20  ;Check if Next_X > 2
+    jp p, Exit  ;If Next_X^2 > 4, next X2 + Y2 >= 4
+;   Above check skips multiplication below
+
+Calc_Next_Y
+
+    ld bc, (Working_X)
+    ld de, (Working_Y)
+    call Long_Multiply.Start
+
+;   bc holds answers
+
+    sla c
+    rl b    ;bc = 2 * X * Y + Y0
+
+    ld hl, (Current_Y)
+    add hl, bc  ;hl = Next_Y
+
+    ld a, h
+    cp $20  ;Check if Next_Y > 2
+    jp p, Exit  ;If Next_Y^2 > 4, next X2 + Y2 >= 4
+
+Move_Next_Working_Coords
+
+    ld (Working_Y), hl
+
+    ld hl, (Next_X)
+    ld (Working_X), hl  ;Working X/Y ready for next iteration
+
+Count_Iterations
+
+    ld a, (Iteration)
+    inc a
+    cp _MAX_ITERATIONS
+    ld (Iteration), a
+
+    jp nz, Calc_X2
+
+Exit
+
+;   Iterations = 51 - b
+
+    ld a, 0
+    out (254), a  ;Set border colour Black  (Shows program working)
+    
+    ld a, (Iteration)
+
+    ret ;Number of iterations returned in a
+
+
+    ENDMODULE
